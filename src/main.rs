@@ -190,15 +190,22 @@ mod tests1 {
         let rr = FF::new(root as i64);
 
         let ntt = NTT::<M>::new();
-        ntt.ntt_recursive(&ins, &rr);
-        ntt.intt_recursive(&ins, &rr);
+        let res = ntt.ntt_recursive(&ins, &rr);
 
+        println!("Post ntt:   {:?}", res);
+        for (u,v) in res.iter().zip(inputs.iter()) {
+            assert_ne!(u.val, v.clone());
+        }
 
-        println!("Actual Result:   {:?}", ins);
+        let res1 = ntt.intt_recursive(&res, &rr);
+        println!("Post intt:   {:?}", res);
+        println!("---");
+        println!("Actual Result:   {:?}", res1);
         println!("Expected Result: {:?}", inputs.clone());
-        for (u,v) in ins.iter().zip(inputs.iter()) {
+        for (u,v) in res1.iter().zip(inputs.iter()) {
             assert_eq!(u.val, v.clone());
         }
+        assert!(false);
     }
 
 }
