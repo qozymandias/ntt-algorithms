@@ -1,3 +1,215 @@
+use group::ff::PrimeField;
+// use group::ff::Field;
+use std::{
+    fmt::Debug,
+    fmt::Display,
+    marker::PhantomData,
+    ops::{Add, Index, Mul, Sub},
+};
+use std::sync::Mutex;
+
+// ------------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+struct FF {
+    val: i64,
+    modulo : i64,
+}
+
+// Define a static variable with Mutex
+lazy_static::lazy_static! {
+    static ref SHARED_VALUE: Mutex<i64> = Mutex::new(1);
+}
+
+impl FF {
+    fn get_shared_mod_value() -> i64 {
+        *SHARED_VALUE.lock().unwrap()
+    }
+
+    fn set_shared_mod_value(new_value: i64) {
+        *SHARED_VALUE.lock().unwrap() = new_value;
+    }
+
+    pub fn new(val: i64) -> Self {
+        FF { val : val , modulo : Self::get_shared_mod_value() }
+    }
+    pub fn as_raw(&self) -> i64 {
+        self.val
+    }
+
+    // Returns x^y mod m.
+    pub fn pow_mod(&self, mut y: i64) -> Self {
+        let mut x = self.val;
+        if y < 0 || self.modulo <= 0 {
+            panic!("Invalid input parameters");
+        }
+        if !(0 <= x && x < self.modulo) {
+            x = ((x % self.modulo) + self.modulo) % self.modulo;
+        }
+        let mut result = 1;
+        while y != 0 {
+            if y & 1 != 0 {
+                result = (result * x) % self.modulo;
+            }
+            x = (x * x) % self.modulo;
+            y >>= 1;
+        }
+        FF::new(result)
+    }
+
+    // Returns x^-1 mod m.
+    pub fn reciprocal_mod(&self) -> Self {
+        let mut x = self.val;
+        if !(0 <= x && x < self.modulo) {
+            panic!("Invalid input parameters");
+        }
+        // Based on a simplification of the extended Euclidean algorithm
+        let mut y = x;
+        x = self.modulo;
+        let mut a = 0;
+        let mut b = 1;
+        while y != 0 {
+            let temp = a - x / y * b;
+            a = b;
+            b = temp;
+            let temp = x % y;
+            x = y;
+            y = temp;
+        }
+        if x == 1 {
+            FF::new(((a % self.modulo) + self.modulo) % self.modulo)
+        } else {
+            panic!("Reciprocal does not exist");
+        }
+    }
+}
+
+impl Add<FF> for FF {
+    type Output = FF;
+
+    fn add(mut self, rhs: Self::Output) -> Self::Output {
+        self.val = (self.val + rhs.val) % self.modulo;
+        self
+    }
+}
+
+impl Mul<FF> for FF {
+    type Output = FF;
+
+    fn mul(mut self, rhs: Self::Output) -> Self::Output {
+        self.val = (self.val * rhs.val) % self.modulo;
+        self
+    }
+}
+impl Sub<FF> for FF {
+    type Output = FF;
+
+    fn sub(mut self, rhs: Self::Output) -> Self::Output {
+        self.val = (self.val - rhs.val) % self.modulo;
+        self
+    }
+}
+
+// ------------------------------------------------------------------------------
+
+struct NTT<const M : usize > {
+}
+
+impl<const M : usize> NTT<M> {
+    pub fn new () -> Self {
+        NTT{}
+    }
+
+    pub fn ntt_recursive(&self, invec: &Vec<FF>, root: &FF) -> Vec<FF> {
+        let n = invec.len();
+        if n == 1 {
+            return vec![invec[0].clone()];
+        }
+
+        let half_n = n / 2;
+
+        // Separate even and odd coefficients
+        let (even, odd): (Vec<_>, Vec<_>) =
+            invec.iter().enumerate().partition(|(i, _)| *i % 2 == 0);
+        let even: Vec<_> = even.into_iter().map(|(_, v)| v.clone()).collect();
+        let odd: Vec<_> = odd.into_iter().map(|(_, v)| v.clone()).collect();
+
+        // Recursively compute NTT on even and odd parts
+        let root_squared = root.pow_mod(2);
+        let even_ntt = self.ntt_recursive(&even, &root_squared);
+        let odd_ntt = self.ntt_recursive(&odd, &root_squared);
+
+        // Combine the results
+        let mut outvec = vec![FF::new(0); n];
+        let mut current_root = FF::new(1);
+        for i in 0..half_n {
+            let t = current_root.clone() * odd_ntt[i].clone();
+            outvec[i] = even_ntt[i].clone() + t.clone();
+            outvec[i + half_n] = even_ntt[i].clone() - t.clone();
+            current_root = current_root.clone() * root.clone();
+        }
+
+        outvec
+    }
+
+    pub fn intt_recursive(&self, invec: &Vec<FF>, root: &FF) -> Vec<FF> {
+        let mut outvec = self.ntt_recursive(invec, &(root.reciprocal_mod()));
+        let scaler = FF::new(invec.len() as i64).reciprocal_mod();
+
+        for i in 0..outvec.len() {
+            outvec[i] = outvec[i].clone() * scaler.clone();
+        }
+        outvec
+    }
+}
+
+#[cfg(test)]
+mod tests1 {
+    use super::*;
+    #[test]
+    fn test_example_ntt_struct() {
+        let inputs: Vec<i64> = vec![11, 42, 31, 43, -11, 12, 78, 37];
+        let mut max_val = 0;
+        for &x in inputs.iter() {
+            if x > max_val {
+                max_val = x;
+            }
+        }
+
+        let min_mod = max_val * max_val * inputs.len() as i64 + 1;
+        let modulus = find_modulus(inputs.len(), min_mod as i128);
+        let root = find_primitive_root(inputs.len() as i128, modulus - 1, modulus);
+
+        const M :usize = 1;
+
+
+        FF::set_shared_mod_value(modulus as i64);
+
+        let ins : Vec<FF> = inputs.iter().map(|x| FF::new(x.clone())).collect();
+
+        let rr = FF::new(root as i64);
+
+        let ntt = NTT::<M>::new();
+        ntt.ntt_recursive(&ins, &rr);
+        ntt.intt_recursive(&ins, &rr);
+
+
+        println!("Actual Result:   {:?}", ins);
+        println!("Expected Result: {:?}", inputs.clone());
+        for (u,v) in ins.iter().zip(inputs.iter()) {
+            assert_eq!(u.val, v.clone());
+        }
+    }
+
+}
+
+
+
+// ------------------------------------------------------------------------------
+
+// Returns the forward number-theoretic transform of the given vector with
+// respect to the given primitive nth root of unity under the given modulus.
+
 // Returns the forward number-theoretic transform of the given vector with
 // respect to the given primitive nth root of unity under the given modulus.
 pub fn ntt_recursive(invec: &Vec<i128>, root: i128, modulus: i128) -> Vec<i128> {
@@ -8,13 +220,10 @@ pub fn ntt_recursive(invec: &Vec<i128>, root: i128, modulus: i128) -> Vec<i128> 
 
     let half_n = n / 2;
 
-    // Split the input vector into even and odd parts
-    let mut even: Vec<i128> = Vec::with_capacity(half_n);
-    let mut odd: Vec<i128> = Vec::with_capacity(half_n);
-    for i in 0..half_n {
-        even.push(invec[i * 2]);
-        odd.push(invec[i * 2 + 1]);
-    }
+    // Separate even and odd coefficients
+    let (even, odd): (Vec<_>, Vec<_>) = invec.iter().enumerate().partition(|(i, _)| *i % 2 == 0);
+    let even: Vec<_> = even.into_iter().map(|(_, v)| v.clone()).collect();
+    let odd: Vec<_> = odd.into_iter().map(|(_, v)| v.clone()).collect();
 
     // Recursively compute NTT on even and odd parts
     let root_squared = pow_mod(root, 2, modulus);
@@ -43,13 +252,12 @@ pub fn intt_recursive(invec: &Vec<i128>, root: i128, modulus: i128) -> Vec<i128>
     outvec
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn test_example_ntt_rec() {
-        let inputs: Vec<i128> = vec![1,2,3,4];
+        let inputs: Vec<i128> = vec![11, 42, 31, 43, -11, 12, 78, 37];
         let mut max_val = 0;
         for &x in inputs.iter() {
             if x > max_val {
@@ -90,9 +298,9 @@ mod tests {
         println!("modulus:   {:?}", modulus.clone());
         println!("root: {:?}", root.clone());
 
-        let temp0 = ntt(&inputs, root, modulus);
+        let temp0 = ntt_recursive(&inputs, root, modulus);
 
-        let res = inverse_ntt(&temp0, root, modulus);
+        let res = intt_recursive(&temp0, root, modulus);
 
         println!("Actual Result:   {:?}", res);
         println!("Expected Result: {:?}", inputs.clone());
@@ -120,22 +328,9 @@ mod tests {
 }
 
 fn modulo_using_subtraction(dividend: i128, divisor: i128) -> i128 {
-    if divisor == 0 {
-        panic!("Division by zero is undefined.");
-    }
-
-    let mut remainder = dividend;
-
-    // Subtract the divisor until the remainder is less than the divisor
-    while remainder >= divisor {
-        remainder -= divisor;
-    }
-
-    remainder
+    dividend % divisor
 }
 
-// Returns the forward number-theoretic transform of the given vector with
-// respect to the given primitive nth root of unity under the given modulus.
 pub fn ntt(invec: &Vec<i128>, root: i128, modulus: i128) -> Vec<i128> {
     let n = invec.len();
     let mut outvec = Vec::with_capacity(n);
