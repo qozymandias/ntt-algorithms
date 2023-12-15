@@ -21,6 +21,9 @@ lazy_static::lazy_static! {
     static ref SHARED_VALUE: Mutex<i64> = Mutex::new(1);
 }
 
+// todo:
+//    - make trait
+
 impl FF {
     fn get_shared_mod_value() -> i64 {
         *SHARED_VALUE.lock().unwrap()
@@ -167,6 +170,59 @@ impl<const M : usize> NTT<M> {
 mod tests1 {
     use super::*;
     #[test]
+    fn test_convolve_4d() {
+        // Example vectors for testing
+        let vec0: Vec<i64> = vec![1, 2, 3, 4];
+        let vec1: Vec<i64> = vec![1,2,3,4];
+        let expected_out: Vec<i64> = vec![26, 28, 26, 20];
+
+        let mut max_val = 0;
+        for &x in vec0.iter().chain(vec1.iter()) {
+            if x > max_val {
+                max_val = x;
+            }
+        }
+
+        let min_mod = max_val * max_val * vec0.len() as i64 + 1;
+        let modulus = find_modulus(vec0.len(), min_mod as i128);
+        let root = find_primitive_root(vec0.len() as i128, modulus - 1, modulus);
+
+        const m :usize = 1;
+
+
+        FF::set_shared_mod_value(modulus as i64);
+
+        let ntt = NTT::<m>::new();
+
+        let ins0 : Vec<FF> = vec0.iter().map(|x| FF::new(x.clone())).collect();
+        let ins1 : Vec<FF> = vec1.iter().map(|x| FF::new(x.clone())).collect();
+
+        let rr = FF::new(root as i64);
+
+        let res0 = ntt.ntt_recursive(&ins0, &rr);
+        let res1 = ntt.ntt_recursive(&ins1, &rr);
+        println!("Post ntt:   {:?}", res0);
+        println!("Post ntt:   {:?}", res1);
+
+        let mut res = Vec::with_capacity(vec0.len());
+        for i in 0..vec0.len() {
+            res.push(res0[i].clone() * res1[i].clone());
+        }
+
+        let res2 = ntt.intt_recursive(&res, &rr);
+        println!("Post intt:  {:?}", res2);
+
+        for i in 0..res2.len() {
+            println!("{:?} vs {:?}", res2[i], expected_out[i]);
+            assert_eq!(res2[i].val, FF::new(expected_out[i]).val);
+        }
+
+        // @TODO: convolve only works for 2d vectors, so it broken somewhere in the recursion
+        // Assert the result
+        // assert_eq!(res, expected_out);
+    }
+
+    #[test]
     fn test_example_ntt_struct() {
         let inputs: Vec<i64> = vec![11, 42, 31, 43, -11, 12, 78, 37];
         let mut max_val = 0;
@@ -180,8 +236,7 @@ mod tests1 {
         let modulus = find_modulus(inputs.len(), min_mod as i128);
         let root = find_primitive_root(inputs.len() as i128, modulus - 1, modulus);
 
-        const M :usize = 1;
-
+        const m :usize = 1;
 
         FF::set_shared_mod_value(modulus as i64);
 
@@ -189,7 +244,7 @@ mod tests1 {
 
         let rr = FF::new(root as i64);
 
-        let ntt = NTT::<M>::new();
+        let ntt = NTT::<m>::new();
         let res = ntt.ntt_recursive(&ins, &rr);
 
         println!("Post ntt:   {:?}", res);
@@ -205,7 +260,6 @@ mod tests1 {
         for (u,v) in res1.iter().zip(inputs.iter()) {
             assert_eq!(u.val, v.clone());
         }
-        assert!(false);
     }
 
 }
