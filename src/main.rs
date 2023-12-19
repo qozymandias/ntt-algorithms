@@ -1,89 +1,65 @@
-use group::ff::PrimeField;
-// use group::ff::Field;
 use std::{
     fmt::Debug,
-    fmt::Display,
-    marker::PhantomData,
     ops::{Add, Index, Mul, Sub},
 };
-use std::sync::Mutex;
 
 // ------------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct FF {
-    val: i64,
-    modulo : i64,
+    val: i128,
+    modulo: i128,
 }
-
-// Define a static variable with Mutex
-lazy_static::lazy_static! {
-    static ref SHARED_VALUE: Mutex<i64> = Mutex::new(1);
+impl Debug for FF {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.val)
+    }
 }
 
 // todo:
 //    - make trait
+//
 
 impl FF {
-    fn get_shared_mod_value() -> i64 {
-        *SHARED_VALUE.lock().unwrap()
+    pub fn new(val: i128, modulo: i128) -> Self {
+        FF {
+            val: val,
+            modulo: modulo,
+        }
     }
-
-    fn set_shared_mod_value(new_value: i64) {
-        *SHARED_VALUE.lock().unwrap() = new_value;
-    }
-
-    pub fn new(val: i64) -> Self {
-        FF { val : val , modulo : Self::get_shared_mod_value() }
-    }
-    pub fn as_raw(&self) -> i64 {
+    pub fn as_raw(&self) -> i128 {
         self.val
     }
 
     // Returns x^y mod m.
-    pub fn pow_mod(&self, mut y: i64) -> Self {
-        let mut x = self.val;
-        if y < 0 || self.modulo <= 0 {
-            panic!("Invalid input parameters");
-        }
-        if !(0 <= x && x < self.modulo) {
-            x = ((x % self.modulo) + self.modulo) % self.modulo;
-        }
-        let mut result = 1;
-        while y != 0 {
-            if y & 1 != 0 {
-                result = (result * x) % self.modulo;
-            }
-            x = (x * x) % self.modulo;
-            y >>= 1;
-        }
-        FF::new(result)
+    pub fn pow_mod(&self, y: i128) -> Self {
+        FF::new(self.val.pow(y as u32) % self.modulo, self.modulo)
     }
 
     // Returns x^-1 mod m.
     pub fn reciprocal_mod(&self) -> Self {
-        let mut x = self.val;
-        if !(0 <= x && x < self.modulo) {
-            panic!("Invalid input parameters");
+        fn extended_gcd(a: i128, b: i128) -> (i128, i128, i128) {
+            if a == 0 {
+                (b, 0, 1)
+            } else {
+                let (g, x, y) = extended_gcd(b % a, a);
+                (g, y - (b / a) * x, x)
+            }
         }
-        // Based on a simplification of the extended Euclidean algorithm
-        let mut y = x;
-        x = self.modulo;
-        let mut a = 0;
-        let mut b = 1;
-        while y != 0 {
-            let temp = a - x / y * b;
-            a = b;
-            b = temp;
-            let temp = x % y;
-            x = y;
-            y = temp;
+        fn mod_inverse(x: i128, m: i128) -> Option<i128> {
+            let (g, x_inv, _) = extended_gcd(x, m);
+            if g == 1 {
+                Some((x_inv % m + m) % m)
+            } else {
+                None
+            }
         }
-        if x == 1 {
-            FF::new(((a % self.modulo) + self.modulo) % self.modulo)
-        } else {
-            panic!("Reciprocal does not exist");
+
+        fn reciprocal_mod(x: i128, m: i128) -> Option<i128> {
+            mod_inverse(x, m)
         }
+
+        FF::new(reciprocal_mod(self.val, self.modulo).unwrap(), self.modulo)
     }
 }
 
@@ -108,24 +84,32 @@ impl Sub<FF> for FF {
     type Output = FF;
 
     fn sub(mut self, rhs: Self::Output) -> Self::Output {
-        self.val = (self.val - rhs.val) % self.modulo;
+        // ensure the result is non negative
+        self.val = (self.val - rhs.val + self.modulo) % self.modulo;
         self
     }
 }
 
 // ------------------------------------------------------------------------------
 
-struct NTT<const M : usize > {
+struct NTT {
+    modulo: i128,
 }
 
-impl<const M : usize> NTT<M> {
-    pub fn new () -> Self {
-        NTT{}
+impl NTT {
+    pub fn new(modulus: i128) -> Self {
+        NTT { modulo: modulus }
     }
 
-    pub fn ntt_recursive(&self, invec: &Vec<FF>, root: &FF) -> Vec<FF> {
+    pub fn ntt_recursive(&self, invec: &Vec<FF>, root: &FF, n_calls: usize) -> Vec<FF> {
+        println!("Recursive call number {:?}", n_calls);
+        println!("current in vec = {:?}", invec);
+
+        println!("root_curr = {:?}", root);
+
         let n = invec.len();
         if n == 1 {
+            println!("Base case");
             return vec![invec[0].clone()];
         }
 
@@ -137,30 +121,38 @@ impl<const M : usize> NTT<M> {
         let even: Vec<_> = even.into_iter().map(|(_, v)| v.clone()).collect();
         let odd: Vec<_> = odd.into_iter().map(|(_, v)| v.clone()).collect();
 
-        // Recursively compute NTT on even and odd parts
         let root_squared = root.pow_mod(2);
-        let even_ntt = self.ntt_recursive(&even, &root_squared);
-        let odd_ntt = self.ntt_recursive(&odd, &root_squared);
+        println!("root_next = {:?}", root_squared);
+        // Recursively compute NTT on even and odd parts
+        let even_ntt = self.ntt_recursive(&even, &root_squared, n_calls + 1);
+        let odd_ntt = self.ntt_recursive(&odd, &root_squared, n_calls + 1);
 
+        println!("Looping at recursion level = {:?}", n_calls);
+        println!("w_in = {:?}", root);
         // Combine the results
-        let mut outvec = vec![FF::new(0); n];
-        let mut current_root = FF::new(1);
+        let mut outvec = vec![FF::new(0, self.modulo); n];
+        let mut current_root = FF::new(1, self.modulo);
         for i in 0..half_n {
+            println!("w = w_in^{:?} = {:?}", i, current_root);
             let t = current_root.clone() * odd_ntt[i].clone();
             outvec[i] = even_ntt[i].clone() + t.clone();
             outvec[i + half_n] = even_ntt[i].clone() - t.clone();
+            println!("outvec[i] = {:?}", outvec[i]);
+            println!("outvec[i+half_n] = {:?}", outvec[i + half_n]);
             current_root = current_root.clone() * root.clone();
         }
+        println!("Done");
 
         outvec
     }
 
     pub fn intt_recursive(&self, invec: &Vec<FF>, root: &FF) -> Vec<FF> {
-        let mut outvec = self.ntt_recursive(invec, &(root.reciprocal_mod()));
-        let scaler = FF::new(invec.len() as i64).reciprocal_mod();
+        let mut outvec = self.ntt_recursive(invec, &(root.reciprocal_mod()), 0);
+        let scaler = FF::new(invec.len() as i128, self.modulo).reciprocal_mod();
 
         for i in 0..outvec.len() {
             outvec[i] = outvec[i].clone() * scaler.clone();
+            println!("outvec[i] * s = {:?}", outvec[i]);
         }
         outvec
     }
@@ -172,9 +164,9 @@ mod tests1 {
     #[test]
     fn test_convolve_4d() {
         // Example vectors for testing
-        let vec0: Vec<i64> = vec![1, 2, 3, 4];
-        let vec1: Vec<i64> = vec![1,2,3,4];
-        let expected_out: Vec<i64> = vec![26, 28, 26, 20];
+        let vec0: Vec<i128> = vec![4, 1, 4, 2, 1, 3, 5, 6];
+        let vec1: Vec<i128> = vec![6, 1, 8, 0, 3, 3, 9, 8];
+        let expected_out: Vec<i128> = vec![123, 120, 106, 92, 139, 144, 140, 124];
 
         let mut max_val = 0;
         for &x in vec0.iter().chain(vec1.iter()) {
@@ -183,24 +175,25 @@ mod tests1 {
             }
         }
 
-        let min_mod = max_val * max_val * vec0.len() as i64 + 1;
+        let min_mod = max_val * max_val * vec0.len() as i128 + 1;
         let modulus = find_modulus(vec0.len(), min_mod as i128);
         let root = find_primitive_root(vec0.len() as i128, modulus - 1, modulus);
 
-        const m :usize = 1;
+        let ntt = NTT::new(modulus);
 
+        let ins0: Vec<FF> = vec0
+            .iter()
+            .map(|x| FF::new(x.clone(), ntt.modulo))
+            .collect();
+        let ins1: Vec<FF> = vec1
+            .iter()
+            .map(|x| FF::new(x.clone(), ntt.modulo))
+            .collect();
 
-        FF::set_shared_mod_value(modulus as i64);
+        let rr = FF::new(root as i128, ntt.modulo);
 
-        let ntt = NTT::<m>::new();
-
-        let ins0 : Vec<FF> = vec0.iter().map(|x| FF::new(x.clone())).collect();
-        let ins1 : Vec<FF> = vec1.iter().map(|x| FF::new(x.clone())).collect();
-
-        let rr = FF::new(root as i64);
-
-        let res0 = ntt.ntt_recursive(&ins0, &rr);
-        let res1 = ntt.ntt_recursive(&ins1, &rr);
+        let res0 = ntt.ntt_recursive(&ins0, &rr, 0);
+        let res1 = ntt.ntt_recursive(&ins1, &rr, 0);
         println!("Post ntt:   {:?}", res0);
         println!("Post ntt:   {:?}", res1);
 
@@ -214,7 +207,7 @@ mod tests1 {
 
         for i in 0..res2.len() {
             println!("{:?} vs {:?}", res2[i], expected_out[i]);
-            assert_eq!(res2[i].val, FF::new(expected_out[i]).val);
+            assert_eq!(res2[i].val, FF::new(expected_out[i], ntt.modulo).val);
         }
 
         // @TODO: convolve only works for 2d vectors, so it broken somewhere in the recursion
@@ -224,7 +217,11 @@ mod tests1 {
 
     #[test]
     fn test_example_ntt_struct() {
-        let inputs: Vec<i64> = vec![11, 42, 31, 43, -11, 12, 78, 37];
+        let mut inputs: Vec<i128> = vec![0; 8];
+        for i in 0..inputs.len() {
+            inputs[i] = i as i128 + 1;
+        }
+
         let mut max_val = 0;
         for &x in inputs.iter() {
             if x > max_val {
@@ -232,39 +229,43 @@ mod tests1 {
             }
         }
 
-        let min_mod = max_val * max_val * inputs.len() as i64 + 1;
+        let min_mod = max_val * max_val * inputs.len() as i128 + 1;
         let modulus = find_modulus(inputs.len(), min_mod as i128);
         let root = find_primitive_root(inputs.len() as i128, modulus - 1, modulus);
 
-        const m :usize = 1;
+        let ntt = NTT::new(modulus);
 
-        FF::set_shared_mod_value(modulus as i64);
+        let ins: Vec<FF> = inputs
+            .iter()
+            .map(|x| FF::new(x.clone(), ntt.modulo))
+            .collect();
+        let rr = FF::new(root as i128, ntt.modulo);
 
-        let ins : Vec<FF> = inputs.iter().map(|x| FF::new(x.clone())).collect();
-
-        let rr = FF::new(root as i64);
-
-        let ntt = NTT::<m>::new();
-        let res = ntt.ntt_recursive(&ins, &rr);
+        let res = ntt.ntt_recursive(&ins, &rr, 0);
 
         println!("Post ntt:   {:?}", res);
-        for (u,v) in res.iter().zip(inputs.iter()) {
+        for (u, v) in res.iter().zip(inputs.iter()) {
             assert_ne!(u.val, v.clone());
         }
 
         let res1 = ntt.intt_recursive(&res, &rr);
-        println!("Post intt:   {:?}", res);
+        println!("---");
+        println!("Post intt:   {:?}", res1);
+        println!("---");
+        println!("modulus = {:?}", modulus);
+        println!("root = {:?}", root);
         println!("---");
         println!("Actual Result:   {:?}", res1);
         println!("Expected Result: {:?}", inputs.clone());
-        for (u,v) in res1.iter().zip(inputs.iter()) {
+        println!("---");
+
+        for (u, v) in res1.iter().zip(inputs.iter()) {
             assert_eq!(u.val, v.clone());
+            assert_eq!(u.modulo, modulus.clone());
         }
+        assert!(false);
     }
-
 }
-
-
 
 // ------------------------------------------------------------------------------
 
