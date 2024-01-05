@@ -156,7 +156,107 @@ impl NTT {
         }
         outvec
     }
+
+    fn factorial(&self, n: usize) -> FF {
+        FF::new((1..=n).product::<usize>() as i128, self.modulo)
+    }
+
+    pub fn taylor_shift(&self, p: &Vec<FF>, k: FF, root: FF) -> Vec<FF> {
+        // p is the input polynomial, k is the shift amount
+        //      u_i = (n - i)! * p_{n-i}
+        //      v_i = k^i * (1/i!)
+        //      g_i = conv(u_i, v_i)
+        //      q_i = g_{n-i} / i!
+
+        let n = p.len() - 1;
+
+        let u: Vec<FF> = (0..=n)
+            .map(|i| self.factorial(n - i) * p[n - i].clone())
+            .collect();
+        let v: Vec<FF> = (0..=n)
+            .map(|i| k.pow_mod(i as i128) * self.factorial(i).reciprocal_mod())
+            .collect();
+
+        let untt = self.ntt_recursive(&u, &root, 0);
+        let vntt = self.ntt_recursive(&v, &root, 0);
+
+        let mut g = Vec::with_capacity(untt.len());
+        for i in 0..=n {
+            g.push(untt[i].clone() * vntt[i].clone());
+        }
+
+        g = self.intt_recursive(&g, &root);
+
+        let q: Vec<FF> = (0..=n)
+            .map(|i| self.factorial(n).reciprocal_mod() * g[n - i].clone())
+            .collect();
+        q
+
+        //   let n = p.len() - 1;
+        //   let u = p
+        //       .iter()
+        //       .rev()
+        //       .enumerate()
+        //       .map(|(i, x)| x.clone() * self.factorial(n - i))
+        //       .collect();
+        //   let v = (0..=n)
+        //       .map(|x| k.pow_mod(x as i128) * self.factorial(x).reciprocal_mod())
+        //       .collect();
+
+        //   let untt = self.ntt_recursive(&u, &root, 0);
+        //   let vntt = self.ntt_recursive(&v, &root, 0);
+        //   let mut g = (0..=n).map(|i| untt[i].clone() * vntt[i].clone()).collect();
+        //   g = self.intt_recursive(&g, &root);
+
+        //   let q: Vec<FF> = g
+        //       .into_iter()
+        //       .rev()
+        //       .take(n + 1)
+        //       .map(|x| x * self.factorial(n).reciprocal_mod())
+        //       .collect();
+        //   q
+    }
 }
+// use rustfft::{num_complex::Complex, Fft, FftPlanner, num_traits::Zero};
+// use std::cmp::max;
+//
+// fn fft_convolve(c1: Vec<Complex<f64>>, c2: Vec<Complex<f64>>) -> Vec<Complex<f64>> {
+//     let mut planner = FftPlanner::<f64>::new();
+//     let fft = planner.plan_fft(c1.len() + c2.len());
+//
+//     let mut input1: Vec<Complex<f64>> = c1.into_iter().map(|x| x / (c1.len() as f64).sqrt()).collect();
+//     let mut input2: Vec<Complex<f64>> = c2.into_iter().map(|x| x / (c2.len() as f64).sqrt()).collect();
+//
+//     fft.process(&mut input1);
+//     fft.process(&mut input2);
+//
+//     let result: Vec<Complex<f64>> = input1.into_iter().zip(input2).map(|(a, b)| a * b).collect();
+//
+//     let mut inverse_fft = planner.plan_fft(result.len()).make_inverse();
+//     inverse_fft.process(&mut result);
+//
+//     result.into_iter().map(|x| x / (result.len() as f64).sqrt()).collect()
+// }
+//
+// fn tay_shift_fourier(coeffs: Vec<f64>, a: f64) -> Vec<f64> {
+//     let nco = coeffs.len() - 1;
+//
+//     let convolved = fft_convolve(
+//         coeffs.iter().rev().enumerate().map(|(i, &x)| x * (1..=nco - i).product::<usize>() as f64).collect(),
+//         (0..=nco).map(|x| a.powi(x as i32) / (1..=x).product::<usize>() as f64).collect(),
+//     );
+//
+//     convolved.into_iter().rev().take(nco + 1).map(|x| x / (1..=nco).product::<usize>() as f64).collect()
+// }
+
+// fn main() { // Example usage
+// let coeffs = vec![1.0, 2.0, 3.0];
+// let a = 2.0;
+//
+// let result = tay_shift_fourier(coeffs, a);
+//
+// println!("{:?}", result);
+// }
 
 #[cfg(test)]
 mod tests1 {
@@ -263,6 +363,40 @@ mod tests1 {
             assert_eq!(u.val, v.clone());
             assert_eq!(u.modulo, modulus.clone());
         }
+    }
+
+    #[test]
+    fn test_example_ntt_taylor_shift() {
+        let inputs: Vec<i128> = vec![1, 2, 3, 4];
+
+        let mut max_val = 0;
+        for &x in inputs.iter() {
+            if x > max_val {
+                max_val = x;
+            }
+        }
+
+        let min_mod = max_val * max_val * inputs.len() as i128 + 1;
+        let modulus = find_modulus(inputs.len(), min_mod as i128);
+        let root = find_primitive_root(inputs.len() as i128, modulus - 1, modulus);
+
+        let ntt = NTT::new(modulus);
+
+        let ins: Vec<FF> = inputs
+            .iter()
+            .map(|x| FF::new(x.clone(), ntt.modulo))
+            .collect();
+        let rr = FF::new(root as i128, ntt.modulo);
+
+        let shift = FF::new(2, ntt.modulo);
+
+        let res = ntt.taylor_shift(&ins, shift, rr);
+
+        println!("taylor_shift:   {:?}", res);
+        for (u, v) in res.iter().zip(inputs.iter()) {
+            assert_ne!(u.val, v.clone());
+        }
+
         assert!(false);
     }
 }
